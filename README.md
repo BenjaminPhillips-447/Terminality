@@ -1,0 +1,1 @@
+A complete cpu based 3d rendering solution constructed entirely withing your very own terminal.
