@@ -1,6 +1,8 @@
 #ifndef TERMINALITY_UNITS_H
 #define TERMINALITY_UNITS_H
 
+#include <stddef.h>
+
 typedef struct
 {
     int x;
@@ -32,6 +34,7 @@ Mat3x3 mat3x3MultiplyMat3x3(const Mat3x3 *left, const Mat3x3 *right);
 
 Mat3x3 rotateAroundAxis(const Vec3 *axis, float angle);
 
+
 typedef struct
 {
     float m[4][4];
@@ -53,7 +56,22 @@ Vec3 mat4x4MultiplyVec3(const Mat4x4 *matrix, Vec3 vector);
 
 typedef struct
 {
+    Vec3 position;
+    Vec3 direction;
+    Vec3 up;
+} Camera;
+
+Mat4x4 getPerspectiveCameraMatrix(const Camera *camera);
+
+typedef struct
+{
     Vec3 p[3];
 } triangle;
+
+typedef struct
+{
+    triangle *triangles;
+    size_t triangleCount;
+} Renderable;
 
 #endif

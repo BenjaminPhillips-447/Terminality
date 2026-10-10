@@ -122,3 +122,36 @@ void orthographicMatrixSetOrthographic(
     matrix->base.m[3][2] = -(farPlane + nearPlane) / (farPlane - nearPlane);
     matrix->base.m[3][3] = 1.0f;
 }
+
+Camera PointAtMatrix(Vec3 pos, Vec3 target, Vec3 up)
+{
+    Vec3 forward = vec3Normalize(vec3Subtract(target, pos));
+    Vec3 right = vec3Normalize(vec3Cross(up, forward));
+    Vec3 newUp = vec3Cross(forward, right);
+    Camera camera = {pos, forward, newUp};
+    return camera;
+}
+
+Mat4x4 getPerspectiveCameraMatrix(const Camera *camera)
+{
+    Vec3 forward = vec3Normalize(camera->direction);
+    Vec3 right = vec3Normalize(vec3Cross(forward, camera->up));
+    Vec3 up = vec3Cross(right, forward);
+    Vec3 backward = vec3Multiply(forward, -1.0f);
+    Mat4x4 view = {0};
+
+    view.m[0][0] = right.x;
+    view.m[0][1] = right.y;
+    view.m[0][2] = right.z;
+    view.m[1][0] = up.x;
+    view.m[1][1] = up.y;
+    view.m[1][2] = up.z;
+    view.m[2][0] = backward.x;
+    view.m[2][1] = backward.y;
+    view.m[2][2] = backward.z;
+    view.m[3][0] = -vec3Dot(right, camera->position);
+    view.m[3][1] = -vec3Dot(up, camera->position);
+    view.m[3][2] = -vec3Dot(backward, camera->position);
+    view.m[3][3] = 1.0f;
+    return view;
+}
