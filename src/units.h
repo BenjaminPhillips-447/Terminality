@@ -24,6 +24,7 @@ Vec3 vec3SubtractAssign(Vec3 *vector, Vec3 other);
 Vec3 vec3Cross(Vec3 left, Vec3 right);
 float vec3Dot(Vec3 left, Vec3 right);
 Vec3 vec3Normalize(Vec3 vector);
+Vec3 vec3Negate(Vec3 vector);
 
 typedef struct
 {
@@ -61,17 +62,35 @@ typedef struct
     Vec3 up;
 } Camera;
 
+void pointAt(Camera *camera, Vec3 pos, Vec3 target, Vec3 up);
 Mat4x4 getPerspectiveCameraMatrix(const Camera *camera);
 
 typedef struct
 {
     Vec3 p[3];
-} triangle;
+    Vec3 normal;
+} Triangle;
 
 typedef struct
 {
-    triangle *triangles;
+    Triangle *triangles;
     size_t triangleCount;
 } Renderable;
+
+typedef struct
+{
+    Vec3 position;
+    Vec3 color;
+    float intensity;
+} Light;
+
+typedef struct
+{
+    Renderable *renderables;
+    size_t renderableCount;
+
+    Light *lights;
+    size_t lightCount;
+} Scene;
 
 #endif

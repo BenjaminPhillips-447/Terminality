@@ -64,6 +64,11 @@ Vec3 vec3Normalize(Vec3 vector)
     Vec3 normalized = {vector.x / length, vector.y / length, vector.z / length};
     return normalized;
 }
+Vec3 vec3Negate(Vec3 vector)
+{
+    Vec3 negated = {-vector.x, -vector.y, -vector.z};
+    return negated;
+}
 
 Vec3 mat4x4MultiplyVec3(const Mat4x4 *matrix, Vec3 vector)
 {
@@ -123,13 +128,15 @@ void orthographicMatrixSetOrthographic(
     matrix->base.m[3][3] = 1.0f;
 }
 
-Camera PointAtMatrix(Vec3 pos, Vec3 target, Vec3 up)
+void pointAt(Camera *camera, Vec3 pos, Vec3 target, Vec3 up)
 {
     Vec3 forward = vec3Normalize(vec3Subtract(target, pos));
     Vec3 right = vec3Normalize(vec3Cross(up, forward));
     Vec3 newUp = vec3Cross(forward, right);
-    Camera camera = {pos, forward, newUp};
-    return camera;
+    
+    camera->position = pos;
+    camera->direction = forward;
+    camera->up = newUp;
 }
 
 Mat4x4 getPerspectiveCameraMatrix(const Camera *camera)

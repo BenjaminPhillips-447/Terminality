@@ -7,33 +7,14 @@
 #include "platform.h"
 
 static char *frameBuffer;
+static float *depthBuffer;
 static size_t frameBufferSize;
 static int frameWidth;
 static int frameHeight;
 static const float fontAspectRatio = 2.5f;
+static const char shadingGradient[] = {'.', ':', '-', '+', '*', '=', '#', '%', '@'};
 
-static void drawTrianglePerspective(triangle tri, Mat4x4 projectionMatrix, Mat4x4 viewMatrix);
-
-void perspectiveRender(Renderable **renderables, size_t renderableNumber, Mat4x4 projectionMatrix, Mat4x4 viewMatrix)
-{
-    for (size_t renderableIndex = 0; renderableIndex < renderableNumber; ++renderableIndex)
-    {
-        Renderable *renderable = renderables[renderableIndex];
-
-        for (size_t i = 0; i < renderable->triangleCount; ++i)
-        {
-            drawTrianglePerspective((renderable->triangles)[i], projectionMatrix, viewMatrix);
-        }
-    }
-}
-
-//void orthographicRender(triangle *triangles, int triangle_count, )
-//{
-//    (void)triangles;
-//    (void)triangle_count;
-//}
-
-static void drawTrianglePerspective(triangle tri, Mat4x4 projectionMatrix, Mat4x4 viewMatrix)
+void drawTrianglePerspective(Triangle tri, Light *lights, size_t lightCount, Mat4x4 projectionMatrix, Mat4x4 viewMatrix)
 {
     if (frameBuffer == NULL || frameWidth <= 0 || frameHeight <= 0)
     {
@@ -46,7 +27,7 @@ static void drawTrianglePerspective(triangle tri, Mat4x4 projectionMatrix, Mat4x
         Vec3 viewSpace = mat4x4MultiplyVec3(&viewMatrix, tri.p[i]);
         viewSpace.y /= fontAspectRatio;
         projected[i] = mat4x4MultiplyVec3(&projectionMatrix, viewSpace);
-        if (!isfinite(projected[i].x) || !isfinite(projected[i].y))
+        if (!isfinite(projected[i].x) || !isfinite(projected[i].y) || !isfinite(projected[i].z))
         {
             return;
         }
@@ -80,19 +61,83 @@ static void drawTrianglePerspective(triangle tri, Mat4x4 projectionMatrix, Mat4x
     {
         for (int x = startX; x <= endX; ++x)
         {
+            //pixel center
             float sampleX = (float)x + 0.5f;
             float sampleY = (float)y + 0.5f;
-            float edge0 = (screenX[1] - screenX[0]) * (sampleY - screenY[0]) - (screenY[1] - screenY[0]) * (sampleX - screenX[0]);
-            float edge1 = (screenX[2] - screenX[1]) * (sampleY - screenY[1]) - (screenY[2] - screenY[1]) * (sampleX - screenX[1]);
-            float edge2 = (screenX[0] - screenX[2]) * (sampleY - screenY[2]) - (screenY[0] - screenY[2]) * (sampleX - screenX[2]);
 
-            if ((area > 0.0f && edge0 >= 0.0f && edge1 >= 0.0f && edge2 >= 0.0f) || (area < 0.0f && edge0 <= 0.0f && edge1 <= 0.0f && edge2 <= 0.0f))
+            // Barycentric coordinates
+            float x0 = screenX[0], y0 = screenY[0];
+            float x1 = screenX[1], y1 = screenY[1];
+            float x2 = screenX[2], y2 = screenY[2];
+
+            float denom = (y1 - y2) * (x0 - x2) + (x2 - x1) * (y0 - y2);
+
+            if (fabsf(denom) < 1e-6f) //degenerate Triangle
+                continue;
+
+            float w0 = ((y1 - y2) * (sampleX - x2) + (x2 - x1) * (sampleY - y2)) / denom;
+            float w1 = ((y2 - y0) * (sampleX - x2) + (x0 - x2) * (sampleY - y2)) / denom;
+            float w2 = 1.0f - w0 - w1;
+
+            // Check if the pixel is inside the triangle
+            if (w0 >= 0.0f && w1 >= 0.0f && w2 >= 0.0f)
             {
-                frameBuffer[(size_t)y * rowSize + (size_t)x] = '#';
+                float depth = w0 * projected[0].z + w1 * projected[1].z + w2 * projected[2].z;
+                size_t pixelIndex = (size_t)y * (size_t)frameWidth + (size_t)x;
+                size_t frameIndex = (size_t)y * rowSize + (size_t)x;
+                if (!isfinite(depth) || depth < -1.0f || depth > 1.0f || depth >= depthBuffer[pixelIndex])
+                {
+                    continue;
+                }
+
+                depthBuffer[pixelIndex] = depth;
+                if (w0 < 0.05f || w1 < 0.05f || w2 < 0.05f)
+                {
+                    //wireframe outline
+                    frameBuffer[frameIndex] = '@';
+                }
+                else
+                {
+                    Vec3 interpolatedPosition = vec3Add(vec3Add(vec3Multiply(tri.p[0], w0), vec3Multiply(tri.p[1], w1)), vec3Multiply(tri.p[2], w2));
+                    float brightness = 0.0f;
+                    // Calculate lighting based on sum of light contributions
+                    for (size_t lightIndex = 0; lightIndex < lightCount; ++lightIndex)
+                    {
+                        Light *light = &lights[lightIndex];
+                        Vec3 lightDir = vec3Normalize(vec3Subtract(light->position, interpolatedPosition));
+                        float dot = fmaxf(0.0f, vec3Dot(tri.normal, lightDir));
+                        brightness += dot * light->intensity;
+                    }
+                    float brightnessClamped = fminf(1.0f, fmaxf(0.0f, brightness));
+                    size_t gradientIndex = (size_t)(brightnessClamped * (sizeof(shadingGradient) / sizeof(shadingGradient[0]) - 1));
+                    // Set the character in the frame buffer based on the calculated brightness
+                    frameBuffer[frameIndex] = shadingGradient[gradientIndex];
+                }
             }
         }
     }
 }
+
+void perspectiveRender(Scene scene, Mat4x4 projectionMatrix, Camera camera)
+{
+    for (size_t renderableIndex = 0; renderableIndex < scene.renderableCount; ++renderableIndex)
+    {
+        Renderable renderable = scene.renderables[renderableIndex];
+
+        for (size_t i = 0; i < renderable.triangleCount; ++i)
+        {
+            Triangle tri = renderable.triangles[i];
+            Vec3 toCamera = vec3Subtract(camera.position, tri.p[0]);
+            drawTrianglePerspective(tri, scene.lights, scene.lightCount, projectionMatrix, getPerspectiveCameraMatrix(&camera));
+        }
+    }
+}
+
+//void orthographicRender(Triangle *triangles, int triangle_count, )
+//{
+//    (void)triangles;
+//    (void)triangle_count;
+//}
 
 int blankFrame(iVec2 terminalSize)
 {
@@ -114,10 +159,30 @@ int blankFrame(iVec2 terminalSize)
         return -1;
     }
 
+    size_t pixelCount = (size_t)terminalSize.x * (size_t)terminalSize.y;
+    if (pixelCount > SIZE_MAX / sizeof(*depthBuffer))
+    {
+        frameBuffer = newFrameBuffer;
+        return -1;
+    }
+
+    float *newDepthBuffer = realloc(depthBuffer, pixelCount * sizeof(*depthBuffer));
+    if (newDepthBuffer == NULL)
+    {
+        frameBuffer = newFrameBuffer;
+        return -1;
+    }
+
     frameBuffer = newFrameBuffer;
+    depthBuffer = newDepthBuffer;
     frameBufferSize = requiredSize;
     frameWidth = terminalSize.x;
     frameHeight = terminalSize.y;
+
+    for (size_t i = 0; i < pixelCount; ++i)
+    {
+        depthBuffer[i] = INFINITY;
+    }
 
     for (int y = 0; y < frameHeight; ++y)
     {
@@ -141,6 +206,8 @@ void freeFrameBuffer(void)
 {
     free(frameBuffer);
     frameBuffer = NULL;
+    free(depthBuffer);
+    depthBuffer = NULL;
     frameBufferSize = 0;
     frameWidth = 0;
     frameHeight = 0;
@@ -149,6 +216,7 @@ void freeFrameBuffer(void)
 void initializeRenderer(void)
 {
     frameBuffer = NULL;
+    depthBuffer = NULL;
     frameBufferSize = 0;
     frameWidth = 0;
     frameHeight = 0;
@@ -159,7 +227,7 @@ int main(void)
     initializeRenderer();
 
     Camera camera = {
-        .position = {0.0f, 0.0f, 5.0f},
+        .position = {0.0f, -2.0f, 5.0f},
         .direction = {0.0f, 0.0f, -1.0f},
         .up = {0.0f, 1.0f, 0.0f}
     };
@@ -167,38 +235,58 @@ int main(void)
     PerspectiveMatrix perspectiveMatrix;
     //OrthographicMatrix orthographicMatrix;
 
-    Vec3 cubeVertices[8] = {
-        {-1.0f, -1.0f, -1.0f},
-        { 1.0f, -1.0f, -1.0f},
-        { 1.0f,  1.0f, -1.0f},
-        {-1.0f,  1.0f, -1.0f},
-        {-1.0f, -1.0f,  1.0f},
-        { 1.0f, -1.0f,  1.0f},
+    Vec3 tetrahedronVertices[4] = {
         { 1.0f,  1.0f,  1.0f},
-        {-1.0f,  1.0f,  1.0f}
+        {-1.0f, -1.0f,  1.0f},
+        {-1.0f,  1.0f, -1.0f},
+        { 1.0f, -1.0f, -1.0f}
     };
-    const size_t cubeFaceIndices[12][3] = {
-        {0, 2, 1}, {0, 3, 2},
-        {4, 5, 6}, {4, 6, 7},
-        {0, 1, 5}, {0, 5, 4},
-        {3, 7, 6}, {3, 6, 2},
-        {0, 4, 7}, {0, 7, 3},
-        {1, 2, 6}, {1, 6, 5}
+    const size_t tetrahedronFaceIndices[4][3] = {
+        {0, 1, 2},
+        {0, 3, 1},
+        {0, 2, 3},
+        {1, 3, 2}
     };
-    triangle cubeTriangles[12];
-    for (size_t i = 0; i < sizeof(cubeTriangles) / sizeof(cubeTriangles[0]); ++i)
+    Triangle tetrahedronTriangles[4];
+    for (size_t i = 0; i < sizeof(tetrahedronTriangles) / sizeof(tetrahedronTriangles[0]); ++i)
     {
-        cubeTriangles[i].p[0] = cubeVertices[cubeFaceIndices[i][0]];
-        cubeTriangles[i].p[1] = cubeVertices[cubeFaceIndices[i][1]];
-        cubeTriangles[i].p[2] = cubeVertices[cubeFaceIndices[i][2]];
-    }
-    Renderable cube = {cubeTriangles, sizeof(cubeTriangles) / sizeof(cubeTriangles[0])};
+        tetrahedronTriangles[i].p[0] = tetrahedronVertices[tetrahedronFaceIndices[i][0]];
+        tetrahedronTriangles[i].p[1] = tetrahedronVertices[tetrahedronFaceIndices[i][1]];
+        tetrahedronTriangles[i].p[2] = tetrahedronVertices[tetrahedronFaceIndices[i][2]];
 
-    Renderable *renderables[] = {&cube};
+        Vec3 edge1 = vec3Subtract(tetrahedronTriangles[i].p[1], tetrahedronTriangles[i].p[0]);
+        Vec3 edge2 = vec3Subtract(tetrahedronTriangles[i].p[2], tetrahedronTriangles[i].p[0]);
+        Vec3 normal = vec3Cross(edge1, edge2);
+        Vec3 centerDirection = vec3Add(vec3Add(tetrahedronTriangles[i].p[0], tetrahedronTriangles[i].p[1]), tetrahedronTriangles[i].p[2]);
+        if (vec3Dot(normal, centerDirection) < 0.0f)
+        {
+            Vec3 temp = tetrahedronTriangles[i].p[1];
+            tetrahedronTriangles[i].p[1] = tetrahedronTriangles[i].p[2];
+            tetrahedronTriangles[i].p[2] = temp;
+            normal = vec3Multiply(normal, -1.0f);
+        }
+        tetrahedronTriangles[i].normal = vec3Normalize(normal);
+    }
+    Renderable tetrahedron = {tetrahedronTriangles, sizeof(tetrahedronTriangles) / sizeof(tetrahedronTriangles[0])};
+    Renderable renderables[] = {tetrahedron};
     size_t renderablesLength = 1;
-    
-    
-    for (int i = 0; i < 200; ++i)
+
+    Light light = {
+        .position = {5.0f, 5.0f, 5.0f},
+        .color = {1.0f, 1.0f, 1.0f},
+        .intensity = 1.0f
+    };
+
+    Light lights[] = {light};
+    size_t lightsLength = 1;
+
+    Scene scene = {
+        .renderables = renderables,
+        .renderableCount = renderablesLength,
+        .lights = lights,
+        .lightCount = lightsLength
+    };
+    for (int i = 0; i < 400; ++i)
     {
         clearFrame();
         iVec2 terminal_size = getTerminalSize();
@@ -207,15 +295,23 @@ int main(void)
             fputs("Failed to clear terminal frame.\n", stderr);
             return 1;
         }
+
+        camera.position.x = 2.0f * sinf((float)i * 0.03f);
+        camera.position.z = 2.0f * cosf((float)i * 0.03f);
+
+        pointAt(&camera, camera.position, (Vec3){0.0f, 0.0f, 0.0f}, (Vec3){0.0f, 1.0f, 0.0f});
+
+
+
         float aspectRatio = (float)terminal_size.x / (float)terminal_size.y;
         perspectiveMatrixSetPerspective(
             &perspectiveMatrix,
-            3.14159265358979323846f / 2.0f,
+            3.14159265358979323846f / 4.0f,
             aspectRatio,
             0.1f,
             100.0f);
 
-        perspectiveRender(renderables, renderablesLength, perspectiveMatrix.base, getPerspectiveCameraMatrix(&camera));
+        perspectiveRender(scene, perspectiveMatrix.base, camera);
 
         finishFrame();
         sleepMS(32);
