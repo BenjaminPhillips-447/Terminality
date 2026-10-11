@@ -8,11 +8,71 @@
 
 static char *frameBuffer;
 static float *depthBuffer;
+static uint8_t *colorBuffer;
 static size_t frameBufferSize;
 static int frameWidth;
 static int frameHeight;
 static const float fontAspectRatio = 2.5f;
 static const char shadingGradient[] = {'.', ':', '-', '+', '*', '=', '#', '%', '@'};
+
+
+static uint8_t closestColorLevel(float channel)
+{
+    static const uint8_t colorLevels[] = {0, 95, 135, 175, 215, 255};
+    uint8_t closestIndex = 0;
+    float closestDistance = channel * channel;
+
+    for (uint8_t i = 1; i < 6; ++i)
+    {
+        float difference = channel - (float)colorLevels[i];
+        float distance = difference * difference;
+        if (distance < closestDistance)
+        {
+            closestDistance = distance;
+            closestIndex = i;
+        }
+    }
+
+    return closestIndex;
+}
+
+static uint8_t rgbToAnsi256(uint8_t red, uint8_t green, uint8_t blue)
+{
+    static const uint8_t colorLevels[] = {0, 95, 135, 175, 215, 255};
+    uint8_t redIndex = closestColorLevel(red);
+    uint8_t greenIndex = closestColorLevel(green);
+    uint8_t blueIndex = closestColorLevel(blue);
+    int redDifference = (int)red - colorLevels[redIndex];
+    int greenDifference = (int)green - colorLevels[greenIndex];
+    int blueDifference = (int)blue - colorLevels[blueIndex];
+    int bestDistance = redDifference * redDifference +
+        greenDifference * greenDifference + blueDifference * blueDifference;
+    uint8_t bestIndex = (uint8_t)(16 + 36 * redIndex + 6 * greenIndex + blueIndex);
+
+    for (uint8_t grayIndex = 0; grayIndex < 24; ++grayIndex)
+    {
+        int gray = 8 + 10 * grayIndex;
+        int grayRedDifference = (int)red - gray;
+        int grayGreenDifference = (int)green - gray;
+        int grayBlueDifference = (int)blue - gray;
+        int distance = grayRedDifference * grayRedDifference + grayGreenDifference * grayGreenDifference + grayBlueDifference * grayBlueDifference;
+        if (distance < bestDistance)
+        {
+            bestDistance = distance;
+            bestIndex = (uint8_t)(232 + grayIndex);
+        }
+    }
+
+    return bestIndex;
+}
+
+static uint8_t Vec3ToAnsi256(Vec3 colour)
+{
+    uint8_t red = (uint8_t)fminf(255.0f, fmaxf(0.0f, colour.x * 255.0f));
+    uint8_t green = (uint8_t)fminf(255.0f, fmaxf(0.0f, colour.y * 255.0f));
+    uint8_t blue = (uint8_t)fminf(255.0f, fmaxf(0.0f, colour.z * 255.0f));
+    return rgbToAnsi256(red, green, blue);
+}
 
 void drawTrianglePerspective(Triangle tri, Light *lights, size_t lightCount, Mat4x4 projectionMatrix, Mat4x4 viewMatrix)
 {
@@ -91,6 +151,25 @@ void drawTrianglePerspective(Triangle tri, Light *lights, size_t lightCount, Mat
                 }
 
                 depthBuffer[pixelIndex] = depth;
+                Vec3 interpolatedPosition = vec3Add(vec3Add(vec3Multiply(tri.p[0], w0), vec3Multiply(tri.p[1], w1)), vec3Multiply(tri.p[2], w2));
+                Vec3 litColour = {0.0f, 0.0f, 0.0f};
+                float brightness = 0.0f;
+                for (size_t lightIndex = 0; lightIndex < lightCount; ++lightIndex)
+                {
+                    Light *light = &lights[lightIndex];
+                    Vec3 lightOffset = vec3Subtract(light->position, interpolatedPosition);
+                    Vec3 lightDir = vec3Normalize(lightOffset);
+                    float distance = vec3Length(lightOffset);
+                    float rangeRatio = light->range > 0.0f ? distance / light->range : 0.0f;
+                    float attenuation = 1.0f / (1.0f + rangeRatio * rangeRatio);
+                    float contribution = fmaxf(0.0f, vec3Dot(tri.normal, lightDir)) * light->intensity * attenuation;
+                    brightness += contribution;
+                    litColour.x += light->color.x * contribution;
+                    litColour.y += light->color.y * contribution;
+                    litColour.z += light->color.z * contribution;
+                }
+                colorBuffer[pixelIndex] = Vec3ToAnsi256(litColour);
+
                 if (w0 < 0.05f || w1 < 0.05f || w2 < 0.05f)
                 {
                     //wireframe outline
@@ -98,16 +177,6 @@ void drawTrianglePerspective(Triangle tri, Light *lights, size_t lightCount, Mat
                 }
                 else
                 {
-                    Vec3 interpolatedPosition = vec3Add(vec3Add(vec3Multiply(tri.p[0], w0), vec3Multiply(tri.p[1], w1)), vec3Multiply(tri.p[2], w2));
-                    float brightness = 0.0f;
-                    // Calculate lighting based on sum of light contributions
-                    for (size_t lightIndex = 0; lightIndex < lightCount; ++lightIndex)
-                    {
-                        Light *light = &lights[lightIndex];
-                        Vec3 lightDir = vec3Normalize(vec3Subtract(light->position, interpolatedPosition));
-                        float dot = fmaxf(0.0f, vec3Dot(tri.normal, lightDir));
-                        brightness += dot * light->intensity;
-                    }
                     float brightnessClamped = fminf(1.0f, fmaxf(0.0f, brightness));
                     size_t gradientIndex = (size_t)(brightnessClamped * (sizeof(shadingGradient) / sizeof(shadingGradient[0]) - 1));
                     // Set the character in the frame buffer based on the calculated brightness
@@ -127,7 +196,7 @@ void perspectiveRender(Scene scene, Mat4x4 projectionMatrix, Camera camera)
         for (size_t i = 0; i < renderable.triangleCount; ++i)
         {
             Triangle tri = renderable.triangles[i];
-            Vec3 toCamera = vec3Subtract(camera.position, tri.p[0]);
+            //Vec3 toCamera = vec3Subtract(camera.position, tri.p[0]);
             drawTrianglePerspective(tri, scene.lights, scene.lightCount, projectionMatrix, getPerspectiveCameraMatrix(&camera));
         }
     }
@@ -173,8 +242,17 @@ int blankFrame(iVec2 terminalSize)
         return -1;
     }
 
+    uint8_t *newColorBuffer = realloc(colorBuffer, pixelCount * sizeof(*colorBuffer));
+    if (newColorBuffer == NULL)
+    {
+        colorBuffer = newColorBuffer;
+        return -1;
+    }
+
     frameBuffer = newFrameBuffer;
     depthBuffer = newDepthBuffer;
+    colorBuffer = newColorBuffer;
+
     frameBufferSize = requiredSize;
     frameWidth = terminalSize.x;
     frameHeight = terminalSize.y;
@@ -182,6 +260,7 @@ int blankFrame(iVec2 terminalSize)
     for (size_t i = 0; i < pixelCount; ++i)
     {
         depthBuffer[i] = INFINITY;
+        colorBuffer[i] = 0;
     }
 
     for (int y = 0; y < frameHeight; ++y)
@@ -196,10 +275,63 @@ int blankFrame(iVec2 terminalSize)
 
 void finishFrame(void)
 {
-    if (frameBuffer != NULL)
+    if (frameBuffer == NULL)
     {
-        fwrite(frameBuffer, 1, frameBufferSize, stdout);
+        return;
     }
+
+    size_t outputCapacity = frameBufferSize * 20u + 64u;
+    char *outputBuffer = malloc(outputCapacity);
+    if (outputBuffer == NULL)
+    {
+        return;
+    }
+
+    size_t outputIndex = 0;
+    static const char homeAndClear[] = "\033[H\033[2J";
+    static const char resetEscape[] = "\033[0m";
+
+    memcpy(outputBuffer + outputIndex, homeAndClear, sizeof(homeAndClear) - 1u);
+    outputIndex += sizeof(homeAndClear) - 1u;
+
+    size_t rowSize = (size_t)frameWidth + 1u;
+    int activeColour = -1;
+    for (int y = 0; y < frameHeight; ++y)
+    {
+        for (int x = 0; x < frameWidth; ++x)
+        {
+            size_t frameIndex = (size_t)y * rowSize + (size_t)x;
+            size_t pixelIndex = (size_t)y * (size_t)frameWidth + (size_t)x;
+            char current = frameBuffer[frameIndex];
+
+            if (current != ' ' && colorBuffer != NULL && colorBuffer[pixelIndex] != activeColour)
+            {
+                int written = snprintf(
+                    outputBuffer + outputIndex,
+                    outputCapacity - outputIndex,
+                    "\033[38;5;%um",
+                    (unsigned)colorBuffer[pixelIndex]);
+                if (written < 0)
+                {
+                    free(outputBuffer);
+                    return;
+                }
+                outputIndex += (size_t)written;
+                activeColour = colorBuffer[pixelIndex];
+            }
+
+            outputBuffer[outputIndex++] = current;
+        }
+
+        outputBuffer[outputIndex++] = '\n';
+    }
+
+    memcpy(outputBuffer + outputIndex, resetEscape, sizeof(resetEscape) - 1u);
+    outputIndex += sizeof(resetEscape) - 1u;
+
+    fwrite(outputBuffer, 1, outputIndex, stdout);
+    fflush(stdout);
+    free(outputBuffer);
 }
 
 void freeFrameBuffer(void)
@@ -208,6 +340,8 @@ void freeFrameBuffer(void)
     frameBuffer = NULL;
     free(depthBuffer);
     depthBuffer = NULL;
+    free(colorBuffer);
+    colorBuffer = NULL;
     frameBufferSize = 0;
     frameWidth = 0;
     frameHeight = 0;
@@ -217,6 +351,7 @@ void initializeRenderer(void)
 {
     frameBuffer = NULL;
     depthBuffer = NULL;
+    colorBuffer = NULL;
     frameBufferSize = 0;
     frameWidth = 0;
     frameHeight = 0;
@@ -227,7 +362,7 @@ int main(void)
     initializeRenderer();
 
     Camera camera = {
-        .position = {0.0f, -2.0f, 5.0f},
+        .position = {0.0f, 1.0f, 5.0f},
         .direction = {0.0f, 0.0f, -1.0f},
         .up = {0.0f, 1.0f, 0.0f}
     };
@@ -273,12 +408,20 @@ int main(void)
 
     Light light = {
         .position = {5.0f, 5.0f, 5.0f},
-        .color = {1.0f, 1.0f, 1.0f},
-        .intensity = 1.0f
+        .color = {1.0f, 0.0f, 0.0f},
+        .intensity = 1.0f,
+        .range = 40.0f
     };
 
-    Light lights[] = {light};
-    size_t lightsLength = 1;
+    Light light2 = {
+        .position = {-5.0f, 5.0f, -5.0f},
+        .color = {0.0f, 0.0f, 1.0f},
+        .intensity = 1.0f,
+        .range = 32.0f
+    };
+
+    Light lights[] = {light, light2};
+    size_t lightsLength = 2;
 
     Scene scene = {
         .renderables = renderables,
@@ -286,9 +429,14 @@ int main(void)
         .lights = lights,
         .lightCount = lightsLength
     };
+    if (beginFrame() != 0)
+    {
+        fputs("Failed to enable terminal ANSI processing.\n", stderr);
+        return 1;
+    }
+
     for (int i = 0; i < 400; ++i)
     {
-        clearFrame();
         iVec2 terminal_size = getTerminalSize();
         if (blankFrame(terminal_size) != 0)
         {
@@ -297,6 +445,7 @@ int main(void)
         }
 
         camera.position.x = 2.0f * sinf((float)i * 0.03f);
+        camera.position.y = 1.0f + 1.5f * sinf((float)i * 0.1f);
         camera.position.z = 2.0f * cosf((float)i * 0.03f);
 
         pointAt(&camera, camera.position, (Vec3){0.0f, 0.0f, 0.0f}, (Vec3){0.0f, 1.0f, 0.0f});

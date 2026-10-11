@@ -23,8 +23,35 @@ const char *platformName(void)
     return "Linux";
 #endif
 }
+
+int beginFrame(void)
+{
+#ifdef _WIN32
+    static int virtualTerminalEnabled;
+    if (!virtualTerminalEnabled)
+    {
+        HANDLE output = GetStdHandle(STD_OUTPUT_HANDLE);
+        DWORD mode;
+        if (output != INVALID_HANDLE_VALUE && output != NULL &&
+            GetConsoleMode(output, &mode))
+        {
+            if (!SetConsoleMode(output, mode | ENABLE_VIRTUAL_TERMINAL_PROCESSING))
+            {
+                return -1;
+            }
+        }
+        virtualTerminalEnabled = 1;
+    }
+#endif
+    return 0;
+}
+
 int clearFrame(void)
 {
+    if (beginFrame() != 0)
+    {
+        return -1;
+    }
     printf("\033[2J\033[3J\033[H");
     return 0;
 }

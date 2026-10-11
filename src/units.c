@@ -21,20 +21,9 @@ Vec3 vec3Subtract(Vec3 left, Vec3 right)
     return result;
 }
 
-Vec3 vec3AddAssign(Vec3 *vector, Vec3 other)
+float vec3Length(Vec3 in)
 {
-    vector->x += other.x;
-    vector->y += other.y;
-    vector->z += other.z;
-    return *vector;
-}
-
-Vec3 vec3SubtractAssign(Vec3 *vector, Vec3 other)
-{
-    vector->x -= other.x;
-    vector->y -= other.y;
-    vector->z -= other.z;
-    return *vector;
+    return sqrtf(in.x * in.x + in.y * in.y + in.z * in.z);
 }
 
 Vec3 vec3Cross(Vec3 left, Vec3 right)
@@ -148,13 +137,13 @@ Mat4x4 getPerspectiveCameraMatrix(const Camera *camera)
     Mat4x4 view = {0};
 
     view.m[0][0] = right.x;
-    view.m[0][1] = right.y;
-    view.m[0][2] = right.z;
-    view.m[1][0] = up.x;
+    view.m[1][0] = right.y;
+    view.m[2][0] = right.z;
+    view.m[0][1] = up.x;
     view.m[1][1] = up.y;
-    view.m[1][2] = up.z;
-    view.m[2][0] = backward.x;
-    view.m[2][1] = backward.y;
+    view.m[2][1] = up.z;
+    view.m[0][2] = backward.x;
+    view.m[1][2] = backward.y;
     view.m[2][2] = backward.z;
     view.m[3][0] = -vec3Dot(right, camera->position);
     view.m[3][1] = -vec3Dot(up, camera->position);

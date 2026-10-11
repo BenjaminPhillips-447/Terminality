@@ -19,8 +19,7 @@ typedef struct
 Vec3 vec3Add(Vec3 left, Vec3 right);
 Vec3 vec3Multiply(Vec3 vector, float scalar);
 Vec3 vec3Subtract(Vec3 left, Vec3 right);
-Vec3 vec3AddAssign(Vec3 *vector, Vec3 other);
-Vec3 vec3SubtractAssign(Vec3 *vector, Vec3 other);
+float vec3Length(Vec3 in);
 Vec3 vec3Cross(Vec3 left, Vec3 right);
 float vec3Dot(Vec3 left, Vec3 right);
 Vec3 vec3Normalize(Vec3 vector);
@@ -82,6 +81,7 @@ typedef struct
     Vec3 position;
     Vec3 color;
     float intensity;
+    float range;
 } Light;
 
 typedef struct
