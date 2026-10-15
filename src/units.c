@@ -1,4 +1,7 @@
 #include <math.h>
+#include <stdbool.h>
+#include <stdint.h>
+#include <stdlib.h>
 #include <string.h>
 
 #include "units.h"
@@ -53,10 +56,18 @@ Vec3 vec3Normalize(Vec3 vector)
     Vec3 normalized = {vector.x / length, vector.y / length, vector.z / length};
     return normalized;
 }
+
 Vec3 vec3Negate(Vec3 vector)
 {
     Vec3 negated = {-vector.x, -vector.y, -vector.z};
     return negated;
+}
+
+static bool vec3Equals(Vec3 left, Vec3 right)
+{
+    return fabsf(left.x - right.x) < 0.001f &&
+           fabsf(left.y - right.y) < 0.001f &&
+           fabsf(left.z - right.z) < 0.001f;
 }
 
 Vec3 mat4x4MultiplyVec3(const Mat4x4 *matrix, Vec3 vector)
@@ -82,8 +93,10 @@ Vec3 mat4x4MultiplyVec3(const Mat4x4 *matrix, Vec3 vector)
     return result;
 }
 
+
 void perspectiveMatrixSetPerspective(
     PerspectiveMatrix *matrix,
+    Frutsum *viewFrustum,
     float fov,
     float aspectRatio,
     float nearPlane,
@@ -96,6 +109,38 @@ void perspectiveMatrixSetPerspective(
     matrix->base.m[2][2] = (farPlane + nearPlane) / (nearPlane - farPlane);
     matrix->base.m[2][3] = -1.0f;
     matrix->base.m[3][2] = (2.0f * farPlane * nearPlane) / (nearPlane - farPlane);
+
+    float verticalHalfAngle = fov * 0.5f;
+    float horizontalHalfAngle = atanf(aspectRatio / f);
+    float sh = sinf(horizontalHalfAngle);
+    float sv = sinf(verticalHalfAngle);
+    float ch = cosf(horizontalHalfAngle);
+    float cv = cosf(verticalHalfAngle);
+
+    Vec3 origin = {0.0f, 0.0f, 0.0f};
+    Vec3 normal0 = {-ch, 0.0f, -sh};
+    Vec3 normal1 = {ch, 0.0f, -sh};
+    Vec3 normal2 = {0.0f, -cv, -sv};
+    Vec3 normal3 = {0.0f, cv, -sv};
+
+    Vec3 nearNormal = {0.0f, 0.0f, -1.0f};
+    Vec3 nearPosition = {0.0f, 0.0f, -nearPlane};
+    Vec3 farNormal = {0.0f, 0.0f, 1.0f};
+    Vec3 farPosition = {0.0f, 0.0f, -farPlane};
+    viewFrustum->sides[0].normal = normal0;
+    viewFrustum->sides[1].normal = normal1;
+    viewFrustum->sides[2].normal = normal2;
+    viewFrustum->sides[3].normal = normal3;
+
+    viewFrustum->sides[0].point = origin;
+    viewFrustum->sides[1].point = origin;
+    viewFrustum->sides[2].point = origin;
+    viewFrustum->sides[3].point = origin;
+
+    viewFrustum->near.normal = nearNormal;
+    viewFrustum->near.point = nearPosition;
+    viewFrustum->far.normal = farNormal;
+    viewFrustum->far.point = farPosition;
 }
 
 void orthographicMatrixSetOrthographic(
@@ -115,6 +160,11 @@ void orthographicMatrixSetOrthographic(
     matrix->base.m[3][1] = -(top + bottom) / (top - bottom);
     matrix->base.m[3][2] = -(farPlane + nearPlane) / (farPlane - nearPlane);
     matrix->base.m[3][3] = 1.0f;
+
+    //todo: add frutsum for orthographic
+
+
+    //on second thought todo: add orthographic
 }
 
 void pointAt(Camera *camera, Vec3 pos, Vec3 target, Vec3 up)
@@ -129,7 +179,7 @@ void pointAt(Camera *camera, Vec3 pos, Vec3 target, Vec3 up)
 }
 
 Mat4x4 getPerspectiveCameraMatrix(const Camera *camera)
-{
+{ //refresh matrix with new look direction and camera rotations
     Vec3 forward = vec3Normalize(camera->direction);
     Vec3 right = vec3Normalize(vec3Cross(forward, camera->up));
     Vec3 up = vec3Cross(right, forward);
@@ -150,4 +200,141 @@ Mat4x4 getPerspectiveCameraMatrix(const Camera *camera)
     view.m[3][2] = -vec3Dot(backward, camera->position);
     view.m[3][3] = 1.0f;
     return view;
+}
+
+static bool degenerateTriangle(Triangle triangle)
+{
+    if (vec3Equals(triangle.p[0], triangle.p[1]) ||
+        vec3Equals(triangle.p[1], triangle.p[2]) ||
+        vec3Equals(triangle.p[2], triangle.p[0]))
+    {
+        return true;
+    }
+
+    Vec3 edge1 = vec3Subtract(triangle.p[1], triangle.p[0]);
+    Vec3 edge2 = vec3Subtract(triangle.p[2], triangle.p[0]);
+    return vec3Length(vec3Cross(edge1, edge2)) < 1e-6f;
+}
+
+static bool clipTriangleAgainstPlane(Plane plane, Triangle triangle, Triangle output[2], size_t *outputCount)
+{
+    Vec3 polygon[6];
+    float distances[3];
+    for (size_t i = 0; i < 3; ++i)
+    {
+        distances[i] = vec3Dot(plane.normal, vec3Subtract(triangle.p[i], plane.point));
+    }
+
+    size_t polygonCount = 0;
+    for (size_t i = 0; i < 3; ++i)
+    {
+        size_t previous = (i + 2) % 3;
+        bool currentInside = distances[i] >= 0.0f;
+        bool previousInside = distances[previous] >= 0.0f;
+
+        if (currentInside != previousInside)
+        {
+            float t = distances[previous] / (distances[previous] - distances[i]);
+            Vec3 edge = vec3Subtract(triangle.p[i], triangle.p[previous]);
+            polygon[polygonCount++] = vec3Add(triangle.p[previous], vec3Multiply(edge, t));
+        }
+        if (currentInside)
+        {
+            polygon[polygonCount++] = triangle.p[i];
+        }
+    }
+
+    if (polygonCount < 3)
+    {
+        *outputCount = 0;
+        return false;
+    }
+
+    *outputCount = 0;
+    for (size_t i = 1; i + 1 < polygonCount; ++i)
+    {
+        Triangle clipped = {{polygon[0], polygon[i], polygon[i + 1]}, triangle.normal};
+        if (!degenerateTriangle(clipped))
+        {
+            output[(*outputCount)++] = clipped;
+        }
+    }
+    return *outputCount > 0;
+}
+
+static bool clipMultiTriangleAgainstPlane(Plane plane, MultiTriangle *triangles)
+{
+    if (triangles->triangleCount == 0 ||
+        triangles->triangleCount > SIZE_MAX / 2 ||
+        triangles->triangleCount * 2 > SIZE_MAX / sizeof(*triangles->triangles))
+    {
+        free(triangles->triangles);
+        *triangles = (MultiTriangle){NULL, 0};
+        return false;
+    }
+
+    size_t capacity = triangles->triangleCount * 2;
+    Triangle *clippedTriangles = malloc(capacity * sizeof(*clippedTriangles));
+    if (clippedTriangles == NULL)
+    {
+        free(triangles->triangles);
+        *triangles = (MultiTriangle){NULL, 0};
+        return false;
+    }
+
+    size_t clippedCount = 0;
+    for (size_t i = 0; i < triangles->triangleCount; ++i)
+    {
+        Triangle clipped[2];
+        size_t clippedTriangleCount = 0;
+        clipTriangleAgainstPlane(plane, triangles->triangles[i], clipped, &clippedTriangleCount);
+        for (size_t j = 0; j < clippedTriangleCount; ++j)
+        {
+            clippedTriangles[clippedCount++] = clipped[j];
+        }
+    }
+
+    free(triangles->triangles);
+    if (clippedCount == 0)
+    {
+        free(clippedTriangles);
+        *triangles = (MultiTriangle){NULL, 0};
+        return false;
+    }
+
+    *triangles = (MultiTriangle){clippedTriangles, clippedCount};
+    return true;
+}
+
+bool clipTriangleAgainstFrutsum(Frutsum frustum, Triangle triangle, MultiTriangle *outputTriangles)
+{
+    *outputTriangles = (MultiTriangle){NULL, 0};
+    Triangle *triangles = malloc(sizeof(*triangles));
+    if (triangles == NULL)
+    {
+        return false;
+    }
+
+    triangles[0] = triangle;
+    MultiTriangle clippedTriangles = {triangles, 1};
+    if (!clipMultiTriangleAgainstPlane(frustum.near, &clippedTriangles))
+    {
+        return false;
+    }
+
+    if (!clipMultiTriangleAgainstPlane(frustum.far, &clippedTriangles))
+    {
+        return false;
+    }
+
+    for (size_t i = 0; i < 4; ++i)
+    {
+        if (!clipMultiTriangleAgainstPlane(frustum.sides[i], &clippedTriangles))
+        {
+            return false;
+        }
+    }
+
+    *outputTriangles = clippedTriangles;
+    return true;
 }

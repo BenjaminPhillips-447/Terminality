@@ -27,3 +27,16 @@ if(MSVC)
 else()
     target_compile_options(base_c_template PRIVATE -Wall -Wextra -Wpedantic)
 endif()
+
+include(CTest)
+if(BUILD_TESTING)
+    add_executable(units_clipping_test
+        tests/units_clipping_test.c
+        src/units.c
+    )
+    target_include_directories(units_clipping_test PRIVATE src)
+    if(NOT WIN32)
+        target_link_libraries(units_clipping_test PRIVATE m)
+    endif()
+    add_test(NAME units_clipping_test COMMAND units_clipping_test)
+endif()

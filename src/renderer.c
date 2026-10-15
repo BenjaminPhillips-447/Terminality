@@ -170,25 +170,55 @@ void drawTrianglePerspective(Triangle tri, Light *lights, size_t lightCount, Mat
                 }
                 colorBuffer[pixelIndex] = Vec3ToAnsi256(litColour);
 
-                if (w0 < 0.05f || w1 < 0.05f || w2 < 0.05f)
-                {
-                    //wireframe outline
-                    frameBuffer[frameIndex] = '@';
-                }
-                else
-                {
+                //if (w0 < 0.05f || w1 < 0.05f || w2 < 0.05f)
+                //{
+                //    //wireframe outline
+                //    frameBuffer[frameIndex] = '@';
+                //}
+                //else
+                //{
                     float brightnessClamped = fminf(1.0f, fmaxf(0.0f, brightness));
                     size_t gradientIndex = (size_t)(brightnessClamped * (sizeof(shadingGradient) / sizeof(shadingGradient[0]) - 1));
                     // Set the character in the frame buffer based on the calculated brightness
                     frameBuffer[frameIndex] = shadingGradient[gradientIndex];
-                }
+               // }
             }
         }
     }
 }
 
+static Plane transformFrustumPlaneToWorld(Plane plane, Vec3 cameraPosition, Vec3 right, Vec3 up, Vec3 backward)
+{
+    Vec3 normal = vec3Add(
+        vec3Add(vec3Multiply(right, plane.normal.x),
+                vec3Multiply(up, plane.normal.y / fontAspectRatio)),
+        vec3Multiply(backward, plane.normal.z));
+    Vec3 point = vec3Add(
+        cameraPosition,
+        vec3Add(vec3Multiply(right, plane.point.x),
+                vec3Add(vec3Multiply(up, plane.point.y * fontAspectRatio),
+                        vec3Multiply(backward, plane.point.z))));
+    return (Plane){normal, point};
+}
+
 void perspectiveRender(Scene scene, Mat4x4 projectionMatrix, Camera camera)
 {
+    Vec3 forward = vec3Normalize(camera.direction);
+    Vec3 right = vec3Normalize(vec3Cross(forward, camera.up));
+    Vec3 up = vec3Cross(right, forward);
+    Vec3 backward = vec3Negate(forward);
+    Frutsum worldFrustum = camera.clippingFrutsum;
+    worldFrustum.near = transformFrustumPlaneToWorld(
+        camera.clippingFrutsum.near, camera.position, right, up, backward);
+    worldFrustum.far = transformFrustumPlaneToWorld(
+        camera.clippingFrutsum.far, camera.position, right, up, backward);
+    for (size_t i = 0; i < 4; ++i)
+    {
+        worldFrustum.sides[i] = transformFrustumPlaneToWorld(
+            camera.clippingFrutsum.sides[i], camera.position, right, up, backward);
+    }
+
+    Mat4x4 viewMatrix = getPerspectiveCameraMatrix(&camera);
     for (size_t renderableIndex = 0; renderableIndex < scene.renderableCount; ++renderableIndex)
     {
         Renderable renderable = scene.renderables[renderableIndex];
@@ -196,8 +226,16 @@ void perspectiveRender(Scene scene, Mat4x4 projectionMatrix, Camera camera)
         for (size_t i = 0; i < renderable.triangleCount; ++i)
         {
             Triangle tri = renderable.triangles[i];
-            //Vec3 toCamera = vec3Subtract(camera.position, tri.p[0]);
-            drawTrianglePerspective(tri, scene.lights, scene.lightCount, projectionMatrix, getPerspectiveCameraMatrix(&camera));
+            MultiTriangle triangles;
+            if (clipTriangleAgainstFrutsum(worldFrustum, tri, &triangles))
+            {
+                for (size_t clippedIndex = 0; clippedIndex < triangles.triangleCount; ++clippedIndex)
+                {
+                    drawTrianglePerspective(
+                        triangles.triangles[clippedIndex], scene.lights, scene.lightCount, projectionMatrix, viewMatrix);
+                }
+                free(triangles.triangles);
+            }
         }
     }
 }
@@ -445,7 +483,7 @@ int main(void)
         }
 
         camera.position.x = 2.0f * sinf((float)i * 0.03f);
-        camera.position.y = 1.0f + 1.5f * sinf((float)i * 0.1f);
+        camera.position.y = 1.0f;
         camera.position.z = 2.0f * cosf((float)i * 0.03f);
 
         pointAt(&camera, camera.position, (Vec3){0.0f, 0.0f, 0.0f}, (Vec3){0.0f, 1.0f, 0.0f});
@@ -455,7 +493,8 @@ int main(void)
         float aspectRatio = (float)terminal_size.x / (float)terminal_size.y;
         perspectiveMatrixSetPerspective(
             &perspectiveMatrix,
-            3.14159265358979323846f / 4.0f,
+            &camera.clippingFrutsum,
+            3.14159265358979323846f / 6.0f,
             aspectRatio,
             0.1f,
             100.0f);
