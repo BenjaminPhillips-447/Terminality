@@ -1,4 +1,6 @@
 #include <math.h>
+#include <errno.h>
+#include <limits.h>
 #include <stdio.h>
 #include <stdint.h>
 #include <stdlib.h>
@@ -14,6 +16,14 @@ static int frameWidth;
 static int frameHeight;
 static const float fontAspectRatio = 2.5f;
 static const char shadingGradient[] = {'.', ':', '-', '+', '*', '=', '#', '%', '@'};
+
+static int loadObjFile(
+    const char *path,
+    Vec3 **vertices,
+    size_t *vertexCount,
+    size_t **indices,
+    size_t *indexCount);
+static int doRender(const Vec3 *vertices, size_t vertexCount, const size_t *indices, size_t indexCount);
 
 
 static uint8_t closestColorLevel(float channel)
@@ -395,54 +405,347 @@ void initializeRenderer(void)
     frameHeight = 0;
 }
 
+static int appendVertex(Vec3 **vertices, size_t *count, size_t *capacity, Vec3 vertex)
+{
+    if (*count == *capacity)
+    {
+        size_t newCapacity = *capacity == 0 ? 64 : *capacity * 2;
+        if (newCapacity < *capacity || newCapacity > SIZE_MAX / sizeof(**vertices))
+        {
+            return -1;
+        }
+
+        Vec3 *newVertices = realloc(*vertices, newCapacity * sizeof(**vertices));
+        if (newVertices == NULL)
+        {
+            return -1;
+        }
+        *vertices = newVertices;
+        *capacity = newCapacity;
+    }
+
+    (*vertices)[(*count)++] = vertex;
+    return 0;
+}
+
+static int appendTriangleIndices(size_t **indices, size_t *count, size_t *capacity, size_t first, size_t second, size_t third)
+{
+    if (*count > SIZE_MAX - 3)
+    {
+        return -1;
+    }
+
+    if (*count + 3 > *capacity)
+    {
+        size_t newCapacity = *capacity == 0 ? 192 : *capacity;
+        while (newCapacity < *count + 3)
+        {
+            if (newCapacity > SIZE_MAX / 2)
+            {
+                return -1;
+            }
+            newCapacity *= 2;
+        }
+        if (newCapacity > SIZE_MAX / sizeof(**indices))
+        {
+            return -1;
+        }
+
+        size_t *newIndices = realloc(*indices, newCapacity * sizeof(**indices));
+        if (newIndices == NULL)
+        {
+            return -1;
+        }
+        *indices = newIndices;
+        *capacity = newCapacity;
+    }
+
+    (*indices)[(*count)++] = first;
+    (*indices)[(*count)++] = second;
+    (*indices)[(*count)++] = third;
+    return 0;
+}
+
+static int parseObjPositionIndex(const char *token, size_t vertexCount, size_t *index)
+{
+    char *end = NULL;
+    errno = 0;
+    long value = strtol(token, &end, 10);
+    if (errno != 0 || end == token || (*end != '\0' && *end != '/') || value == 0)
+    {
+        return -1;
+    }
+
+    if (value > 0)
+    {
+        *index = (size_t)(value - 1);
+        return 0;
+    }
+
+    unsigned long magnitude = (unsigned long)(-(value + 1)) + 1;
+    if (magnitude > vertexCount)
+    {
+        return -1;
+    }
+    *index = vertexCount - (size_t)magnitude;
+    return 0;
+}
+
+static int parseObjFloat(const char *token, float *value)
+{
+    char *end = NULL;
+    errno = 0;
+    float parsed = strtof(token, &end);
+    if (errno != 0 || end == token || *end != '\0' || !isfinite(parsed))
+    {
+        return -1;
+    }
+    *value = parsed;
+    return 0;
+}
+
+static char *nextObjToken(char **cursor)
+{
+    while (**cursor == ' ' || **cursor == '\t' || **cursor == '\r' || **cursor == '\n')
+    {
+        ++*cursor;
+    }
+    if (**cursor == '\0')
+    {
+        return NULL;
+    }
+
+    char *token = *cursor;
+    while (**cursor != '\0' && **cursor != ' ' && **cursor != '\t' &&
+        **cursor != '\r' && **cursor != '\n')
+    {
+        ++*cursor;
+    }
+    if (**cursor != '\0')
+    {
+        **cursor = '\0';
+        ++*cursor;
+    }
+    return token;
+}
+
+static int loadObjFile(const char *path, Vec3 **vertices, size_t *vertexCount, size_t **indices, size_t *indexCount)
+{
+    FILE *file = fopen(path, "r");
+    if (file == NULL)
+    {
+        fprintf(stderr, "Could not open OBJ file '%s'.\n", path);
+        return -1;
+    }
+
+    *vertices = NULL;
+    *vertexCount = 0;
+    *indices = NULL;
+    *indexCount = 0;
+    size_t vertexCapacity = 0;
+    size_t indexCapacity = 0;
+    size_t lineNumber = 0;
+    char line[4096];
+    int result = 0;
+
+    while (fgets(line, sizeof(line), file) != NULL)
+    {
+        ++lineNumber;
+        if (strchr(line, '\n') == NULL && !feof(file))
+        {
+            int character;
+            while ((character = fgetc(file)) != '\n' && character != EOF)
+            {
+            }
+            fprintf(stderr, "OBJ line %zu is too long.\n", lineNumber);
+            result = -1;
+            break;
+        }
+
+        char *cursor = line;
+        char *token = nextObjToken(&cursor);
+        if (token == NULL || token[0] == '#')
+        {
+            continue;
+        }
+
+        if (strcmp(token, "v") == 0)
+        {
+            Vec3 vertex = {0.0f, 0.0f, 0.0f};
+            token = nextObjToken(&cursor);
+            int valid = token != NULL && parseObjFloat(token, &vertex.x) == 0;
+            token = nextObjToken(&cursor);
+            valid = valid && token != NULL && parseObjFloat(token, &vertex.y) == 0;
+            token = nextObjToken(&cursor);
+            valid = valid && token != NULL && parseObjFloat(token, &vertex.z) == 0;
+            if (!valid || appendVertex(vertices, vertexCount, &vertexCapacity, vertex) != 0)
+            {
+                fprintf(stderr, "Invalid vertex or out of memory at OBJ line %zu.\n", lineNumber);
+                result = -1;
+                break;
+            }
+        }
+        else if (strcmp(token, "f") == 0)
+        {
+            size_t first = 0;
+            size_t previous = 0;
+            size_t faceVertexCount = 0;
+            token = nextObjToken(&cursor);
+            while (token != NULL && token[0] != '#')
+            {
+                size_t current;
+                if (parseObjPositionIndex(token, *vertexCount, &current) != 0)
+                {
+                    fprintf(stderr, "Invalid face index at OBJ line %zu.\n", lineNumber);
+                    result = -1;
+                    break;
+                }
+
+                if (faceVertexCount == 0)
+                {
+                    first = current;
+                }
+                else if (faceVertexCount >= 2 &&
+                    appendTriangleIndices(indices, indexCount, &indexCapacity, first, previous, current) != 0)
+                {
+                    fprintf(stderr, "Out of memory while reading OBJ line %zu.\n", lineNumber);
+                    result = -1;
+                    break;
+                }
+                previous = current;
+                ++faceVertexCount;
+                token = nextObjToken(&cursor);
+            }
+
+            if (result != 0)
+            {
+                break;
+            }
+            if (faceVertexCount < 3)
+            {
+                fprintf(stderr, "Face has fewer than three vertices at OBJ line %zu.\n", lineNumber);
+                result = -1;
+                break;
+            }
+        }
+    }
+
+    if (ferror(file))
+    {
+        fputs("Error while reading OBJ file.\n", stderr);
+        result = -1;
+    }
+    fclose(file);
+
+    if (result == 0)
+    {
+        if (*vertexCount == 0 || *indexCount == 0)
+        {
+            fputs("OBJ file contains no renderable vertices or faces.\n", stderr);
+            result = -1;
+        }
+        else
+        {
+            for (size_t i = 0; i < *indexCount; ++i)
+            {
+                if ((*indices)[i] >= *vertexCount)
+                {
+                    fprintf(stderr, "Face references a missing vertex (index %zu).\n", (*indices)[i] + 1);
+                    result = -1;
+                    break;
+                }
+            }
+        }
+    }
+
+    if (result != 0)
+    {
+        free(*vertices);
+        free(*indices);
+        *vertices = NULL;
+        *indices = NULL;
+        *vertexCount = 0;
+        *indexCount = 0;
+    }
+    return result;
+}
+
 int main(void)
 {
+    char path[256];
+    printf("Select a valid 3d .OBJ file:\n");
+
+    if (fgets(path, sizeof(path), stdin) == NULL)
+    {
+        fputs("Input error.\n", stderr);
+        return 1;
+    }
+
+    if (strchr(path, '\n') == NULL && !feof(stdin))
+    {
+        fputs("OBJ file path is too long.\n", stderr);
+        return 1;
+    }
+    path[strcspn(path, "\r\n")] = '\0';
+
+    Vec3 *vertices = NULL;
+    size_t vertexCount = 0;
+    size_t *indices = NULL;
+    size_t indexCount = 0;
+    if (loadObjFile(path, &vertices, &vertexCount, &indices, &indexCount) != 0)
+    {
+        return 1;
+    }
+
+    int result = doRender(vertices, vertexCount, indices, indexCount);
+    free(vertices);
+    free(indices);
+    return result;
+}
+
+static int doRender(const Vec3 *vertices, size_t vertexCount, const size_t *indices, size_t indexCount)
+{
     initializeRenderer();
+    size_t triangleCount = indexCount / 3;
+    if (indexCount % 3 != 0 || triangleCount > SIZE_MAX / sizeof(Triangle))
+    {
+        fputs("Invalid mesh index data.\n", stderr);
+        return 1;
+    }
+
+    Triangle *triangles = malloc(triangleCount * sizeof(*triangles));
+    if (triangles == NULL)
+    {
+        fputs("Unable to allocate mesh triangles.\n", stderr);
+        return 1;
+    }
+    for (size_t i = 0; i < triangleCount; ++i)
+    {
+        for (size_t corner = 0; corner < 3; ++corner)
+        {
+            size_t vertexIndex = indices[i * 3 + corner];
+            if (vertexIndex >= vertexCount)
+            {
+                fputs("Mesh index is outside the vertex array.\n", stderr);
+                free(triangles);
+                return 1;
+            }
+            triangles[i].p[corner] = vertices[vertexIndex];
+        }
+
+        Vec3 edge1 = vec3Subtract(triangles[i].p[1], triangles[i].p[0]);
+        Vec3 edge2 = vec3Subtract(triangles[i].p[2], triangles[i].p[0]);
+        triangles[i].normal = vec3Normalize(vec3Cross(edge1, edge2));
+    }
 
     Camera camera = {
         .position = {0.0f, 1.0f, 5.0f},
         .direction = {0.0f, 0.0f, -1.0f},
         .up = {0.0f, 1.0f, 0.0f}
     };
-
     PerspectiveMatrix perspectiveMatrix;
-    //OrthographicMatrix orthographicMatrix;
-
-    Vec3 tetrahedronVertices[4] = {
-        { 1.0f,  1.0f,  1.0f},
-        {-1.0f, -1.0f,  1.0f},
-        {-1.0f,  1.0f, -1.0f},
-        { 1.0f, -1.0f, -1.0f}
-    };
-    const size_t tetrahedronFaceIndices[4][3] = {
-        {0, 1, 2},
-        {0, 3, 1},
-        {0, 2, 3},
-        {1, 3, 2}
-    };
-    Triangle tetrahedronTriangles[4];
-    for (size_t i = 0; i < sizeof(tetrahedronTriangles) / sizeof(tetrahedronTriangles[0]); ++i)
-    {
-        tetrahedronTriangles[i].p[0] = tetrahedronVertices[tetrahedronFaceIndices[i][0]];
-        tetrahedronTriangles[i].p[1] = tetrahedronVertices[tetrahedronFaceIndices[i][1]];
-        tetrahedronTriangles[i].p[2] = tetrahedronVertices[tetrahedronFaceIndices[i][2]];
-
-        Vec3 edge1 = vec3Subtract(tetrahedronTriangles[i].p[1], tetrahedronTriangles[i].p[0]);
-        Vec3 edge2 = vec3Subtract(tetrahedronTriangles[i].p[2], tetrahedronTriangles[i].p[0]);
-        Vec3 normal = vec3Cross(edge1, edge2);
-        Vec3 centerDirection = vec3Add(vec3Add(tetrahedronTriangles[i].p[0], tetrahedronTriangles[i].p[1]), tetrahedronTriangles[i].p[2]);
-        if (vec3Dot(normal, centerDirection) < 0.0f)
-        {
-            Vec3 temp = tetrahedronTriangles[i].p[1];
-            tetrahedronTriangles[i].p[1] = tetrahedronTriangles[i].p[2];
-            tetrahedronTriangles[i].p[2] = temp;
-            normal = vec3Multiply(normal, -1.0f);
-        }
-        tetrahedronTriangles[i].normal = vec3Normalize(normal);
-    }
-    Renderable tetrahedron = {tetrahedronTriangles, sizeof(tetrahedronTriangles) / sizeof(tetrahedronTriangles[0])};
-    Renderable renderables[] = {tetrahedron};
-    size_t renderablesLength = 1;
+    Renderable mesh = {triangles, triangleCount};
+    Renderable renderables[] = {mesh};
 
     Light light = {
         .position = {5.0f, 5.0f, 5.0f},
@@ -450,45 +753,42 @@ int main(void)
         .intensity = 1.0f,
         .range = 40.0f
     };
-
     Light light2 = {
         .position = {-5.0f, 5.0f, -5.0f},
         .color = {0.0f, 0.0f, 1.0f},
         .intensity = 1.0f,
         .range = 32.0f
     };
-
     Light lights[] = {light, light2};
-    size_t lightsLength = 2;
-
     Scene scene = {
         .renderables = renderables,
-        .renderableCount = renderablesLength,
+        .renderableCount = sizeof(renderables) / sizeof(renderables[0]),
         .lights = lights,
-        .lightCount = lightsLength
+        .lightCount = sizeof(lights) / sizeof(lights[0])
     };
+
     if (beginFrame() != 0)
     {
         fputs("Failed to enable terminal ANSI processing.\n", stderr);
+        free(triangles);
         return 1;
     }
 
+    int result = 0;
     for (int i = 0; i < 400; ++i)
     {
         iVec2 terminal_size = getTerminalSize();
-        if (blankFrame(terminal_size) != 0)
+        if (terminal_size.x <= 0 || terminal_size.y <= 0 || blankFrame(terminal_size) != 0)
         {
             fputs("Failed to clear terminal frame.\n", stderr);
-            return 1;
+            result = 1;
+            break;
         }
 
         camera.position.x = 2.0f * sinf((float)i * 0.03f);
         camera.position.y = 1.0f;
         camera.position.z = 2.0f * cosf((float)i * 0.03f);
-
         pointAt(&camera, camera.position, (Vec3){0.0f, 0.0f, 0.0f}, (Vec3){0.0f, 1.0f, 0.0f});
-
-
 
         float aspectRatio = (float)terminal_size.x / (float)terminal_size.y;
         perspectiveMatrixSetPerspective(
@@ -500,11 +800,14 @@ int main(void)
             100.0f);
 
         perspectiveRender(scene, perspectiveMatrix.base, camera);
-
         finishFrame();
         sleepMS(32);
     }
 
-    puts("Done.");
-    return 0;
+    free(triangles);
+    if (result == 0)
+    {
+        puts("Done.");
+    }
+    return result;
 }
