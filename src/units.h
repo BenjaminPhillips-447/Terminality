@@ -25,16 +25,13 @@ Vec3 vec3Cross(Vec3 left, Vec3 right);
 float vec3Dot(Vec3 left, Vec3 right);
 Vec3 vec3Normalize(Vec3 vector);
 Vec3 vec3Negate(Vec3 vector);
+Vec3 rotateAroundAxis(Vec3 axis, float angle, Vec3 input);
+
 
 typedef struct
 {
     float m[3][3];
 } Mat3x3;
-
-Mat3x3 mat3x3MultiplyMat3x3(const Mat3x3 *left, const Mat3x3 *right);
-
-Mat3x3 rotateAroundAxis(const Vec3 *axis, float angle);
-
 
 typedef struct
 {

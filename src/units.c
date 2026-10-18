@@ -63,6 +63,21 @@ Vec3 vec3Negate(Vec3 vector)
     return negated;
 }
 
+Vec3 rotateAroundAxis(Vec3 axis, float angle, Vec3 input)
+{
+    axis = vec3Normalize(axis);
+    if (vec3Length(axis) == 0.0f)
+    {
+        return input;
+    }
+
+    float cosine = cosf(angle);
+    float sine = sinf(angle);
+    return vec3Add(
+        vec3Add(vec3Multiply(input, cosine), vec3Multiply(vec3Cross(axis, input), sine)),
+        vec3Multiply(axis, vec3Dot(axis, input) * (1.0f - cosine)));
+}
+
 static bool vec3Equals(Vec3 left, Vec3 right)
 {
     return fabsf(left.x - right.x) < 0.001f &&
@@ -92,7 +107,6 @@ Vec3 mat4x4MultiplyVec3(const Mat4x4 *matrix, Vec3 vector)
 
     return result;
 }
-
 
 void perspectiveMatrixSetPerspective(
     PerspectiveMatrix *matrix,

@@ -8,6 +8,8 @@
 
 #ifdef _WIN32
 #include <windows.h>
+#include <conio.h>
+#include <ctype.h>
 #else
 #include <errno.h>
 #include <time.h>
@@ -32,8 +34,7 @@ int beginFrame(void)
     {
         HANDLE output = GetStdHandle(STD_OUTPUT_HANDLE);
         DWORD mode;
-        if (output != INVALID_HANDLE_VALUE && output != NULL &&
-            GetConsoleMode(output, &mode))
+        if (output != INVALID_HANDLE_VALUE && output != NULL && GetConsoleMode(output, &mode))
         {
             if (!SetConsoleMode(output, mode | ENABLE_VIRTUAL_TERMINAL_PROCESSING))
             {
@@ -44,6 +45,17 @@ int beginFrame(void)
     }
 #endif
     return 0;
+}
+
+char getInput(void)
+{
+#ifdef _WIN32
+    if (_kbhit())
+    {
+        return (char)toupper(_getch());
+    }
+#endif
+    return '\0';
 }
 
 int clearFrame(void)

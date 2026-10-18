@@ -17,14 +17,8 @@ static int frameHeight;
 static const float fontAspectRatio = 2.5f;
 static const char shadingGradient[] = {'.', ':', '-', '+', '*', '=', '#', '%', '@'};
 
-static int loadObjFile(
-    const char *path,
-    Vec3 **vertices,
-    size_t *vertexCount,
-    size_t **indices,
-    size_t *indexCount);
+static int loadObjFile(const char *path, Vec3 **vertices, size_t *vertexCount, size_t **indices, size_t *indexCount);
 static int doRender(const Vec3 *vertices, size_t vertexCount, const size_t *indices, size_t indexCount);
-
 
 static uint8_t closestColorLevel(float channel)
 {
@@ -743,6 +737,7 @@ static int doRender(const Vec3 *vertices, size_t vertexCount, const size_t *indi
         .direction = {0.0f, 0.0f, -1.0f},
         .up = {0.0f, 1.0f, 0.0f}
     };
+    pointAt(&camera, camera.position, (Vec3){0.0f, 0.0f, 0.0f}, camera.up);
     PerspectiveMatrix perspectiveMatrix;
     Renderable mesh = {triangles, triangleCount};
     Renderable renderables[] = {mesh};
@@ -775,7 +770,7 @@ static int doRender(const Vec3 *vertices, size_t vertexCount, const size_t *indi
     }
 
     int result = 0;
-    for (int i = 0; i < 400; ++i)
+    while (true)
     {
         iVec2 terminal_size = getTerminalSize();
         if (terminal_size.x <= 0 || terminal_size.y <= 0 || blankFrame(terminal_size) != 0)
@@ -784,12 +779,6 @@ static int doRender(const Vec3 *vertices, size_t vertexCount, const size_t *indi
             result = 1;
             break;
         }
-
-        camera.position.x = 2.0f * sinf((float)i * 0.03f);
-        camera.position.y = 1.0f;
-        camera.position.z = 2.0f * cosf((float)i * 0.03f);
-        pointAt(&camera, camera.position, (Vec3){0.0f, 0.0f, 0.0f}, (Vec3){0.0f, 1.0f, 0.0f});
-
         float aspectRatio = (float)terminal_size.x / (float)terminal_size.y;
         perspectiveMatrixSetPerspective(
             &perspectiveMatrix,
@@ -801,7 +790,63 @@ static int doRender(const Vec3 *vertices, size_t vertexCount, const size_t *indi
 
         perspectiveRender(scene, perspectiveMatrix.base, camera);
         finishFrame();
-        sleepMS(32);
+        char input = getInput();
+        if (input == 'W')
+        {
+            camera.position = (Vec3){camera.position.x + (camera.direction.x * 0.05f), camera.position.y + (camera.direction.y * 0.05f), camera.position.z + (camera.direction.z * 0.05f)};
+        }
+        else if (input == 'A')
+        {
+            Vec3 right = vec3Cross(camera.up, camera.direction);
+            camera.position = (Vec3){camera.position.x + (right.x * 0.05f), camera.position.y + (right.y * 0.05f), camera.position.z + (right.z * 0.05f)};
+        }
+        else if (input == 'S')
+        {
+            camera.position = (Vec3){camera.position.x - (camera.direction.x * 0.05f), camera.position.y - (camera.direction.y * 0.05f), camera.position.z - (camera.direction.z * 0.05f)};
+        }
+        else if (input == 'D')
+        {
+            Vec3 left = vec3Negate(vec3Cross(camera.up, camera.direction));
+            camera.position = (Vec3){camera.position.x + (left.x * 0.05f), camera.position.y + (left.y * 0.05f), camera.position.z + (left.z * 0.05f)};
+        }
+        else if (input == 'K') // pitch
+        {
+            Vec3 right = vec3Cross(camera.up, camera.direction);
+            float angle = 3.14159265358979323846f * 0.05f;
+            camera.up = rotateAroundAxis(right, angle, camera.up);
+            camera.direction = rotateAroundAxis(right, angle, camera.direction);
+        }
+        else if (input == 'I')
+        {
+            Vec3 right = vec3Cross(camera.up, camera.direction);
+            float angle = -3.14159265358979323846f * 0.05f;
+            camera.up = rotateAroundAxis(right, angle, camera.up);
+            camera.direction = rotateAroundAxis(right, angle, camera.direction);
+        }
+        else if (input == 'J') // yaw
+        {
+            float angle = 3.14159265358979323846f * 0.05f;
+            camera.direction = rotateAroundAxis(camera.up, angle, camera.direction);
+        }
+        else if (input == 'L')
+        {
+            float angle = -3.14159265358979323846f * 0.05f;
+            camera.direction = rotateAroundAxis(camera.up, angle, camera.direction);
+        }
+        else if (input == 'O') // roll
+        {
+            float angle = 3.14159265358979323846f * 0.05f;
+            camera.up = rotateAroundAxis(camera.direction, angle, camera.up);
+        }
+        else if (input == 'U')
+        {
+            float angle = -3.14159265358979323846f * 0.05f;
+            camera.up = rotateAroundAxis(camera.direction, angle, camera.up);
+        }
+        else if (input == 27) // esc as exit key
+            break;
+
+        sleepMS(12);
     }
 
     free(triangles);
