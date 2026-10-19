@@ -849,6 +849,11 @@ static int doRender(const Vec3 *vertices, size_t vertexCount, const size_t *indi
         sleepMS(12);
     }
 
+    if (endFrame() != 0)
+    {
+        fputs("Failed to restore terminal settings.\n", stderr);
+        result = 1;
+    }
     free(triangles);
     if (result == 0)
     {

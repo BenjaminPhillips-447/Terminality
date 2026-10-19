@@ -3,18 +3,21 @@
 #endif
 
 #include <stdio.h>
+#include <ctype.h>
 
 #include "platform.h"
 
 #ifdef _WIN32
 #include <windows.h>
 #include <conio.h>
-#include <ctype.h>
 #else
 #include <errno.h>
 #include <time.h>
 #include <sys/ioctl.h>
+#include <termios.h>
 #include <unistd.h>
+static struct termios originalTerminalSettings;
+static int terminalModeEnabled;
 #endif
 
 const char *platformName(void)
@@ -43,8 +46,45 @@ int beginFrame(void)
         }
         virtualTerminalEnabled = 1;
     }
+#else
+    if (terminalModeEnabled)
+    {
+        return 0;
+    }
+    if (!isatty(STDIN_FILENO) || tcgetattr(STDIN_FILENO, &originalTerminalSettings) != 0)
+    {
+        return -1;
+    }
+
+    struct termios terminalSettings = originalTerminalSettings;
+    terminalSettings.c_lflag &= (tcflag_t)~(ICANON | ECHO);
+    terminalSettings.c_cc[VMIN] = 0;
+    terminalSettings.c_cc[VTIME] = 0;
+    if (tcsetattr(STDIN_FILENO, TCSANOW, &terminalSettings) != 0)
+    {
+        return -1;
+    }
+    terminalModeEnabled = 1;
 #endif
     return 0;
+}
+
+int endFrame(void)
+{
+#ifdef _WIN32
+    return 0;
+#else
+    if (!terminalModeEnabled)
+    {
+        return 0;
+    }
+    if (tcsetattr(STDIN_FILENO, TCSANOW, &originalTerminalSettings) != 0)
+    {
+        return -1;
+    }
+    terminalModeEnabled = 0;
+    return 0;
+#endif
 }
 
 char getInput(void)
@@ -53,6 +93,12 @@ char getInput(void)
     if (_kbhit())
     {
         return (char)toupper(_getch());
+    }
+#else
+    unsigned char input;
+    if (read(STDIN_FILENO, &input, sizeof(input)) == 1)
+    {
+        return (char)toupper(input);
     }
 #endif
     return '\0';
