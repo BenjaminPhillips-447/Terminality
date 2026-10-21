@@ -7,6 +7,7 @@ int beginFrame(void);
 int clearFrame(void);
 int endFrame(void);
 int sleepMS(unsigned int duration_ms);
+double getMonotonicSeconds(void);
 char getInput(void);
 iVec2 getTerminalSize(void);
 

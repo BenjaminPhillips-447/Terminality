@@ -29,6 +29,27 @@ const char *platformName(void)
 #endif
 }
 
+double getMonotonicSeconds(void)
+{
+#ifdef _WIN32
+    static LARGE_INTEGER frequency = {0};
+    if (frequency.QuadPart == 0)
+    {
+        QueryPerformanceFrequency(&frequency);
+    }
+    LARGE_INTEGER counter;
+    QueryPerformanceCounter(&counter);
+    return (double)counter.QuadPart / (double)frequency.QuadPart;
+#else
+    struct timespec now;
+    if (clock_gettime(CLOCK_MONOTONIC, &now) != 0)
+    {
+        return 0.0;
+    }
+    return (double)now.tv_sec + (double)now.tv_nsec / 1000000000.0;
+#endif
+}
+
 int beginFrame(void)
 {
 #ifdef _WIN32

@@ -5,6 +5,7 @@
 #include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
+#include <time.h>
 
 #include "platform.h"
 
@@ -12,6 +13,12 @@ static char *frameBuffer;
 static float *depthBuffer;
 static uint8_t *colorBuffer;
 static size_t frameBufferSize;
+static char *previousFrameBuffer;
+static uint8_t *previousColorBuffer;
+static size_t previousFramePixelCount;
+static int previousFrameWidth;
+static int previousFrameHeight;
+static int previousFrameValid;
 static int frameWidth;
 static int frameHeight;
 static const float fontAspectRatio = 2.5f;
@@ -230,15 +237,18 @@ void perspectiveRender(Scene scene, Mat4x4 projectionMatrix, Camera camera)
         for (size_t i = 0; i < renderable.triangleCount; ++i)
         {
             Triangle tri = renderable.triangles[i];
-            MultiTriangle triangles;
-            if (clipTriangleAgainstFrutsum(worldFrustum, tri, &triangles))
+            if (vec3Dot(tri.normal, forward) < 0)
             {
-                for (size_t clippedIndex = 0; clippedIndex < triangles.triangleCount; ++clippedIndex)
+                MultiTriangle triangles;
+                if (clipTriangleAgainstFrutsum(worldFrustum, tri, &triangles))
                 {
-                    drawTrianglePerspective(
-                        triangles.triangles[clippedIndex], scene.lights, scene.lightCount, projectionMatrix, viewMatrix);
+                    for (size_t clippedIndex = 0; clippedIndex < triangles.triangleCount; ++clippedIndex)
+                    {
+                        drawTrianglePerspective(
+                            triangles.triangles[clippedIndex], scene.lights, scene.lightCount, projectionMatrix, viewMatrix);
+                    }
+                    free(triangles.triangles);
                 }
-                free(triangles.triangles);
             }
         }
     }
@@ -276,6 +286,32 @@ int blankFrame(iVec2 terminalSize)
         frameBuffer = newFrameBuffer;
         return -1;
     }
+
+    if (pixelCount != previousFramePixelCount)
+    {
+        char *newPreviousFrameBuffer = realloc(previousFrameBuffer, pixelCount);
+        if (newPreviousFrameBuffer == NULL)
+        {
+            frameBuffer = newFrameBuffer;
+            return -1;
+        }
+        previousFrameBuffer = newPreviousFrameBuffer;
+
+        uint8_t *newPreviousColorBuffer = realloc(previousColorBuffer, pixelCount);
+        if (newPreviousColorBuffer == NULL)
+        {
+            frameBuffer = newFrameBuffer;
+            return -1;
+        }
+        previousColorBuffer = newPreviousColorBuffer;
+    }
+    if (terminalSize.x != previousFrameWidth || terminalSize.y != previousFrameHeight)
+    {
+        previousFrameValid = 0;
+    }
+    previousFramePixelCount = pixelCount;
+    previousFrameWidth = terminalSize.x;
+    previousFrameHeight = terminalSize.y;
 
     float *newDepthBuffer = realloc(depthBuffer, pixelCount * sizeof(*depthBuffer));
     if (newDepthBuffer == NULL)
@@ -315,65 +351,162 @@ int blankFrame(iVec2 terminalSize)
     return 0;
 }
 
-void finishFrame(void)
+double finishFrame(bool reRenderFrame, double lastFrameTime)
 {
     if (frameBuffer == NULL)
     {
-        return;
+        return lastFrameTime;
     }
 
-    size_t outputCapacity = frameBufferSize * 20u + 64u;
+    if (frameBufferSize > (SIZE_MAX - 512u) / 40u)
+    {
+        return lastFrameTime;
+    }
+
+    size_t outputCapacity = frameBufferSize * 40u + 512u;
     char *outputBuffer = malloc(outputCapacity);
     if (outputBuffer == NULL)
     {
-        return;
+        return lastFrameTime;
     }
 
     size_t outputIndex = 0;
-    static const char homeAndClear[] = "\033[H\033[2J";
     static const char resetEscape[] = "\033[0m";
-
-    memcpy(outputBuffer + outputIndex, homeAndClear, sizeof(homeAndClear) - 1u);
-    outputIndex += sizeof(homeAndClear) - 1u;
-
     size_t rowSize = (size_t)frameWidth + 1u;
-    int activeColour = -1;
-    for (int y = 0; y < frameHeight; ++y)
-    {
-        for (int x = 0; x < frameWidth; ++x)
-        {
-            size_t frameIndex = (size_t)y * rowSize + (size_t)x;
-            size_t pixelIndex = (size_t)y * (size_t)frameWidth + (size_t)x;
-            char current = frameBuffer[frameIndex];
 
-            if (current != ' ' && colorBuffer != NULL && colorBuffer[pixelIndex] != activeColour)
+    if (reRenderFrame)
+    {
+        for (int y = 0; y < frameHeight; ++y)
+        {
+            int x = 0;
+            while (x < frameWidth)
             {
-                int written = snprintf(
+                size_t pixelIndex = (size_t)y * (size_t)frameWidth + (size_t)x;
+                size_t frameIndex = (size_t)y * rowSize + (size_t)x;
+                int changed = !previousFrameValid ||
+                    frameBuffer[frameIndex] != previousFrameBuffer[pixelIndex] ||
+                    (frameBuffer[frameIndex] != ' ' && colorBuffer[pixelIndex] != previousColorBuffer[pixelIndex]);
+                if (!changed)
+                {
+                    ++x;
+                    continue;
+                }
+
+                int runStart = x;
+                do
+                {
+                    ++x;
+                    if (x >= frameWidth)
+                    {
+                        break;
+                    }
+                    pixelIndex = (size_t)y * (size_t)frameWidth + (size_t)x;
+                    frameIndex = (size_t)y * rowSize + (size_t)x;
+                    changed = !previousFrameValid ||
+                        frameBuffer[frameIndex] != previousFrameBuffer[pixelIndex] ||
+                        (frameBuffer[frameIndex] != ' ' &&
+                            colorBuffer[pixelIndex] != previousColorBuffer[pixelIndex]);
+                } while (changed);
+
+                int cursorWritten = snprintf(
                     outputBuffer + outputIndex,
                     outputCapacity - outputIndex,
-                    "\033[38;5;%um",
-                    (unsigned)colorBuffer[pixelIndex]);
-                if (written < 0)
+                    "\033[%d;%dH",
+                    y + 1,
+                    runStart + 1);
+                if (cursorWritten < 0 || (size_t)cursorWritten >= outputCapacity - outputIndex)
                 {
                     free(outputBuffer);
-                    return;
+                    return lastFrameTime;
                 }
-                outputIndex += (size_t)written;
-                activeColour = colorBuffer[pixelIndex];
+                outputIndex += (size_t)cursorWritten;
+
+                int activeColour = -1;
+                for (int runX = runStart; runX < x; ++runX)
+                {
+                    pixelIndex = (size_t)y * (size_t)frameWidth + (size_t)runX;
+                    frameIndex = (size_t)y * rowSize + (size_t)runX;
+                    if (frameBuffer[frameIndex] != ' ' &&
+                        colorBuffer[pixelIndex] != activeColour)
+                    {
+                        int colourWritten = snprintf(
+                            outputBuffer + outputIndex,
+                            outputCapacity - outputIndex,
+                            "\033[38;5;%um",
+                            (unsigned)colorBuffer[pixelIndex]);
+                        if (colourWritten < 0 ||
+                            (size_t)colourWritten >= outputCapacity - outputIndex)
+                        {
+                            free(outputBuffer);
+                            return lastFrameTime;
+                        }
+                        outputIndex += (size_t)colourWritten;
+                        activeColour = colorBuffer[pixelIndex];
+                    }
+                    outputBuffer[outputIndex++] = frameBuffer[frameIndex];
+                }
             }
-
-            outputBuffer[outputIndex++] = current;
         }
-
-        outputBuffer[outputIndex++] = '\n';
     }
+
+    double now = getMonotonicSeconds();
+    double elapsedSeconds = now - lastFrameTime;
+    double fps = elapsedSeconds > 0.0 ? 1.0 / elapsedSeconds : 0.0;
 
     memcpy(outputBuffer + outputIndex, resetEscape, sizeof(resetEscape) - 1u);
     outputIndex += sizeof(resetEscape) - 1u;
 
+    char status[256];
+    int statusLength = snprintf(
+        status,
+        sizeof(status),
+        "Operating System : %s   Terminal Size : (%i, %i)   FPS : %f",
+        platformName(), frameWidth, frameHeight + 1, fps);
+    if (statusLength < 0 || (size_t)statusLength >= sizeof(status))
+    {
+        free(outputBuffer);
+        return lastFrameTime;
+    }
+    int statusWritten = snprintf(
+        outputBuffer + outputIndex,
+        outputCapacity - outputIndex,
+        "\033[%d;1H",
+        frameHeight + 1);
+    if (statusWritten < 0 || (size_t)statusWritten >= outputCapacity - outputIndex)
+    {
+        free(outputBuffer);
+        return lastFrameTime;
+    }
+    outputIndex += (size_t)statusWritten;
+    size_t statusRowLength = (size_t)statusLength < (size_t)frameWidth
+        ? (size_t)statusLength
+        : (size_t)frameWidth;
+    memcpy(outputBuffer + outputIndex, status, statusRowLength);
+    outputIndex += statusRowLength;
+    if (statusRowLength < (size_t)frameWidth)
+    {
+        memset(outputBuffer + outputIndex, ' ', (size_t)frameWidth - statusRowLength);
+        outputIndex += (size_t)frameWidth - statusRowLength;
+    }
     fwrite(outputBuffer, 1, outputIndex, stdout);
     fflush(stdout);
     free(outputBuffer);
+
+    if (reRenderFrame)
+    {
+        for (int y = 0; y < frameHeight; ++y)
+        {
+            for (int x = 0; x < frameWidth; ++x)
+            {
+                size_t pixelIndex = (size_t)y * (size_t)frameWidth + (size_t)x;
+                size_t frameIndex = (size_t)y * rowSize + (size_t)x;
+                previousFrameBuffer[pixelIndex] = frameBuffer[frameIndex];
+                previousColorBuffer[pixelIndex] = colorBuffer[pixelIndex];
+            }
+        }
+        previousFrameValid = 1;
+    }
+    return now;
 }
 
 void freeFrameBuffer(void)
@@ -384,6 +517,14 @@ void freeFrameBuffer(void)
     depthBuffer = NULL;
     free(colorBuffer);
     colorBuffer = NULL;
+    free(previousFrameBuffer);
+    previousFrameBuffer = NULL;
+    free(previousColorBuffer);
+    previousColorBuffer = NULL;
+    previousFramePixelCount = 0;
+    previousFrameWidth = 0;
+    previousFrameHeight = 0;
+    previousFrameValid = 0;
     frameBufferSize = 0;
     frameWidth = 0;
     frameHeight = 0;
@@ -394,6 +535,12 @@ void initializeRenderer(void)
     frameBuffer = NULL;
     depthBuffer = NULL;
     colorBuffer = NULL;
+    previousFrameBuffer = NULL;
+    previousColorBuffer = NULL;
+    previousFramePixelCount = 0;
+    previousFrameWidth = 0;
+    previousFrameHeight = 0;
+    previousFrameValid = 0;
     frameBufferSize = 0;
     frameWidth = 0;
     frameHeight = 0;
@@ -769,91 +916,109 @@ static int doRender(const Vec3 *vertices, size_t vertexCount, const size_t *indi
         return 1;
     }
 
+    double frameTime = getMonotonicSeconds();
     int result = 0;
+    bool recalculateFrame = true;
+    int renderedWidth = 0;
+    int renderedHeight = 0;
     while (true)
     {
         iVec2 terminal_size = getTerminalSize();
-        if (terminal_size.x <= 0 || terminal_size.y <= 0 || blankFrame(terminal_size) != 0)
+        if (terminal_size.x <= 0 || terminal_size.y <= 1)
         {
-            fputs("Failed to clear terminal frame.\n", stderr);
+            fputs("Terminal is too small to render a frame and status line.\n", stderr);
             result = 1;
             break;
         }
-        float aspectRatio = (float)terminal_size.x / (float)terminal_size.y;
-        perspectiveMatrixSetPerspective(
-            &perspectiveMatrix,
-            &camera.clippingFrutsum,
-            3.14159265358979323846f / 6.0f,
-            aspectRatio,
-            0.1f,
-            100.0f);
+        --terminal_size.y;
+        if (terminal_size.x != renderedWidth || terminal_size.y != renderedHeight)
+        {
+            recalculateFrame = true;
+        }
 
-        perspectiveRender(scene, perspectiveMatrix.base, camera);
-        finishFrame();
+        if (recalculateFrame)
+        {
+            if (blankFrame(terminal_size) != 0)
+            {
+                fputs("Failed to clear terminal frame.\n", stderr);
+                result = 1;
+                break;
+            }
+            renderedWidth = terminal_size.x;
+            renderedHeight = terminal_size.y;
+            float aspectRatio = (float)terminal_size.x / (float)terminal_size.y;
+            perspectiveMatrixSetPerspective(
+                &perspectiveMatrix,
+                &camera.clippingFrutsum,
+                3.14159265358979323846f / 6.0f,
+                aspectRatio,
+                0.1f,
+                100.0f);
+            perspectiveRender(scene, perspectiveMatrix.base, camera);
+        }
+        frameTime = finishFrame(recalculateFrame, frameTime);
         char input = getInput();
-        if (input == 'W')
+        if (input != '\0')
         {
-            camera.position = (Vec3){camera.position.x + (camera.direction.x * 0.05f), camera.position.y + (camera.direction.y * 0.05f), camera.position.z + (camera.direction.z * 0.05f)};
+            recalculateFrame = true;
+            if (input == 'W')
+            {
+                camera.position = (Vec3){camera.position.x + (camera.direction.x * 0.05f), camera.position.y + (camera.direction.y * 0.05f), camera.position.z + (camera.direction.z * 0.05f)};
+            }
+            else if (input == 'A')
+            {
+                Vec3 right = vec3Cross(camera.up, camera.direction);
+                camera.position = (Vec3){camera.position.x + (right.x * 0.05f), camera.position.y + (right.y * 0.05f), camera.position.z + (right.z * 0.05f)};
+            }
+            else if (input == 'S')
+            {
+                camera.position = (Vec3){camera.position.x - (camera.direction.x * 0.05f), camera.position.y - (camera.direction.y * 0.05f), camera.position.z - (camera.direction.z * 0.05f)};
+            }
+            else if (input == 'D')
+            {
+                Vec3 left = vec3Negate(vec3Cross(camera.up, camera.direction));
+                camera.position = (Vec3){camera.position.x + (left.x * 0.05f), camera.position.y + (left.y * 0.05f), camera.position.z + (left.z * 0.05f)};
+            }
+            else if (input == 'K') // pitch
+            {
+                Vec3 right = vec3Cross(camera.up, camera.direction);
+                float angle = 3.14159265358979323846f * 0.05f;
+                camera.up = rotateAroundAxis(right, angle, camera.up);
+                camera.direction = rotateAroundAxis(right, angle, camera.direction);
+            }
+            else if (input == 'I')
+            {
+                Vec3 right = vec3Cross(camera.up, camera.direction);
+                float angle = -3.14159265358979323846f * 0.05f;
+                camera.up = rotateAroundAxis(right, angle, camera.up);
+                camera.direction = rotateAroundAxis(right, angle, camera.direction);
+            }
+            else if (input == 'J') // yaw
+            {
+                float angle = 3.14159265358979323846f * 0.05f;
+                camera.direction = rotateAroundAxis(camera.up, angle, camera.direction);
+            }
+            else if (input == 'L')
+            {
+                float angle = -3.14159265358979323846f * 0.05f;
+                camera.direction = rotateAroundAxis(camera.up, angle, camera.direction);
+            }
+            else if (input == 'O') // roll
+            {
+                float angle = 3.14159265358979323846f * 0.05f;
+                camera.up = rotateAroundAxis(camera.direction, angle, camera.up);
+            }
+            else if (input == 'U')
+            {
+                float angle = -3.14159265358979323846f * 0.05f;
+                camera.up = rotateAroundAxis(camera.direction, angle, camera.up);
+            }
+            else if (input == 27) // esc as exit key
+                break;
         }
-        else if (input == 'A')
-        {
-            Vec3 right = vec3Cross(camera.up, camera.direction);
-            camera.position = (Vec3){camera.position.x + (right.x * 0.05f), camera.position.y + (right.y * 0.05f), camera.position.z + (right.z * 0.05f)};
-        }
-        else if (input == 'S')
-        {
-            camera.position = (Vec3){camera.position.x - (camera.direction.x * 0.05f), camera.position.y - (camera.direction.y * 0.05f), camera.position.z - (camera.direction.z * 0.05f)};
-        }
-        else if (input == 'D')
-        {
-            Vec3 left = vec3Negate(vec3Cross(camera.up, camera.direction));
-            camera.position = (Vec3){camera.position.x + (left.x * 0.05f), camera.position.y + (left.y * 0.05f), camera.position.z + (left.z * 0.05f)};
-        }
-        else if (input == 'K') // pitch
-        {
-            Vec3 right = vec3Cross(camera.up, camera.direction);
-            float angle = 3.14159265358979323846f * 0.05f;
-            camera.up = rotateAroundAxis(right, angle, camera.up);
-            camera.direction = rotateAroundAxis(right, angle, camera.direction);
-        }
-        else if (input == 'I')
-        {
-            Vec3 right = vec3Cross(camera.up, camera.direction);
-            float angle = -3.14159265358979323846f * 0.05f;
-            camera.up = rotateAroundAxis(right, angle, camera.up);
-            camera.direction = rotateAroundAxis(right, angle, camera.direction);
-        }
-        else if (input == 'J') // yaw
-        {
-            float angle = 3.14159265358979323846f * 0.05f;
-            camera.direction = rotateAroundAxis(camera.up, angle, camera.direction);
-        }
-        else if (input == 'L')
-        {
-            float angle = -3.14159265358979323846f * 0.05f;
-            camera.direction = rotateAroundAxis(camera.up, angle, camera.direction);
-        }
-        else if (input == 'O') // roll
-        {
-            float angle = 3.14159265358979323846f * 0.05f;
-            camera.up = rotateAroundAxis(camera.direction, angle, camera.up);
-        }
-        else if (input == 'U')
-        {
-            float angle = -3.14159265358979323846f * 0.05f;
-            camera.up = rotateAroundAxis(camera.direction, angle, camera.up);
-        }
-        else if (input == 27) // esc as exit key
-            break;
-
-        sleepMS(12);
+        else recalculateFrame = false;
     }
 
-    if (endFrame() != 0)
-    {
-        fputs("Failed to restore terminal settings.\n", stderr);
-        result = 1;
-    }
     free(triangles);
     if (result == 0)
     {
